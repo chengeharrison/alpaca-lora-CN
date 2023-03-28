@@ -1,15 +1,19 @@
+from transformers import LlamaTokenizer, LlamaForCausalLM, GenerationConfig
 import sys
 
 import fire
-import gradio as gr
 import torch
-import transformers
 from peft import PeftModel
+import transformers
+import gradio as gr
+from colossalai.nn.optimizer.gemini_optimizer import HybridAdam
+from colossalai.utils import get_current_device
+from colossalai.nn.parallel import GeminiDDP
+from colossalai.utils.model.colo_init_context import ColoInitContext
 
 assert (
     "LlamaTokenizer" in transformers._import_structure["models.llama"]
-), "LLaMA is now in HuggingFace's main branch.\nPlease reinstall it: pip uninstall transformers && pip install git+https://github.com/huggingface/transformers.git"  # noqa: E501
-from transformers import GenerationConfig, LlamaForCausalLM, LlamaTokenizer
+), "LLaMA is now in HuggingFace's main branch.\nPlease reinstall it: pip uninstall transformers && pip install git+https://github.com/huggingface/transformers.git"
 
 if torch.cuda.is_available():
     device = "cuda"
@@ -19,7 +23,7 @@ else:
 try:
     if torch.backends.mps.is_available():
         device = "mps"
-except:  # noqa: E722
+except:
     pass
 
 
@@ -28,18 +32,26 @@ def main(
     base_model: str = "",
     lora_weights: str = "tloen/alpaca-lora-7b",
 ):
-    assert (
-        base_model
-    ), "Please specify a --base_model, e.g. --base_model='decapoda-research/llama-7b-hf'"
+    assert base_model, (
+        "Please specify a --base_model, e.g. --base_model='decapoda-research/llama-7b-hf'"
+    )
 
     tokenizer = LlamaTokenizer.from_pretrained(base_model)
     if device == "cuda":
-        model = LlamaForCausalLM.from_pretrained(
-            base_model,
-            load_in_8bit=load_8bit,
-            torch_dtype=torch.float16,
-            device_map="auto",
-        )
+        with ColoInitContext(device=get_current_device()):
+            model = LlamaForCausalLM.from_pretrained(
+                base_model,
+                load_in_8bit=load_8bit,
+                torch_dtype=torch.float16,
+                device_map="auto",
+            )
+
+        model = GeminiDDP(model,
+                          device=get_current_device(),
+                          placement_policy="auto",
+                          pin_memory=True,
+                          search_range_mb=64)
+
         model = PeftModel.from_pretrained(
             model,
             lora_weights,
@@ -115,23 +127,18 @@ def main(
         fn=evaluate,
         inputs=[
             gr.components.Textbox(
-                lines=2,
-                label="Instruction",
-                placeholder="Tell me about alpacas.",
+                lines=2, label="Instruction", placeholder="Tell me about alpacas."
             ),
             gr.components.Textbox(lines=2, label="Input", placeholder="none"),
-            gr.components.Slider(
-                minimum=0, maximum=1, value=0.1, label="Temperature"
-            ),
-            gr.components.Slider(
-                minimum=0, maximum=1, value=0.75, label="Top p"
-            ),
+            gr.components.Slider(minimum=0, maximum=1,
+                                 value=0.1, label="Temperature"),
+            gr.components.Slider(minimum=0, maximum=1,
+                                 value=0.75, label="Top p"),
             gr.components.Slider(
                 minimum=0, maximum=100, step=1, value=40, label="Top k"
             ),
-            gr.components.Slider(
-                minimum=1, maximum=4, step=1, value=4, label="Beams"
-            ),
+            gr.components.Slider(minimum=1, maximum=4,
+                                 step=1, value=4, label="Beams"),
             gr.components.Slider(
                 minimum=1, maximum=2000, step=1, value=128, label="Max tokens"
             ),
@@ -143,8 +150,8 @@ def main(
             )
         ],
         title="🦙🌲 Alpaca-LoRA",
-        description="Alpaca-LoRA is a 7B-parameter LLaMA model finetuned to follow instructions. It is trained on the [Stanford Alpaca](https://github.com/tatsu-lab/stanford_alpaca) dataset and makes use of the Huggingface LLaMA implementation. For more information, please visit [the project's website](https://github.com/tloen/alpaca-lora).",  # noqa: E501
-    ).launch()
+        description="Alpaca-LoRA is a 7B-parameter LLaMA model finetuned to follow instructions. It is trained on the [Stanford Alpaca](https://github.com/tatsu-lab/stanford_alpaca) dataset and makes use of the Huggingface LLaMA implementation. For more information, please visit [the project's website](https://github.com/tloen/alpaca-lora).",
+    ).launch(share=True)
     # Old testing code follows.
 
     """
@@ -155,7 +162,7 @@ def main(
         "Tell me about the king of France in 2019.",
         "List all Canadian provinces in alphabetical order.",
         "Write a Python program that prints the first 10 Fibonacci numbers.",
-        "Write a program that prints the numbers from 1 to 100. But for multiples of three print 'Fizz' instead of the number and for the multiples of five print 'Buzz'. For numbers which are multiples of both three and five print 'FizzBuzz'.",  # noqa: E501
+        "Write a program that prints the numbers from 1 to 100. But for multiples of three print 'Fizz' instead of the number and for the multiples of five print 'Buzz'. For numbers which are multiples of both three and five print 'FizzBuzz'.",
         "Tell me five words that rhyme with 'shock'.",
         "Translate the sentence 'I have no mouth but I must scream' into Spanish.",
         "Count up from 1 to 500.",
@@ -168,7 +175,7 @@ def main(
 
 def generate_prompt(instruction, input=None):
     if input:
-        return f"""Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.  # noqa: E501
+        return f"""Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
 
 ### Instruction:
 {instruction}
@@ -179,7 +186,7 @@ def generate_prompt(instruction, input=None):
 ### Response:
 """
     else:
-        return f"""Below is an instruction that describes a task. Write a response that appropriately completes the request.  # noqa: E501
+        return f"""Below is an instruction that describes a task. Write a response that appropriately completes the request.
 
 ### Instruction:
 {instruction}

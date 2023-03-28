@@ -50,6 +50,11 @@ def tokenize(prompt, add_eos_token=True):
 
 
 def generate_and_tokenize_prompt(data_point):
+    instruction = {}
+    instruction["instruction"] = data_point["input"]
+    instruction["input"] = ""
+    instruction["output"] = data_point["target"]
+    data_point = instruction
     full_prompt = generate_prompt(data_point)
     tokenized_full_prompt = tokenize(full_prompt)
     if not train_on_inputs:
@@ -68,7 +73,7 @@ def generate_and_tokenize_prompt(data_point):
 def train(
     # model/data params
     base_model: str = "",  # the only required argument
-    data_path: str = "./alpaca_data_cleaned.json",
+    data_path: str = "./belle_open_source_1M.train.json",
     output_dir: str = "./lora-alpaca",
     # training hyperparams
     batch_size: int = 128,
@@ -134,6 +139,8 @@ def train(
                       placement_policy="auto",
                       pin_memory=True,
                       search_range_mb=64)
+
+    optimizer = HybridAdam(model.parameters())
 
     tokenizer = LlamaTokenizer.from_pretrained(base_model)
 
@@ -236,21 +243,21 @@ def generate_prompt(data_point):
     if data_point["input"]:
         return f"""Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
 
-# Instruction:
+### Instruction:
 {data_point["instruction"]}
 
-# Input:
+### Input:
 {data_point["input"]}
 
-# Response:
+### Response:
 {data_point["output"]}"""
     else:
         return f"""Below is an instruction that describes a task. Write a response that appropriately completes the request.
 
-# Instruction:
+### Instruction:
 {data_point["instruction"]}
 
-# Response:
+### Response:
 {data_point["output"]}"""
 
 
