@@ -149,8 +149,8 @@ def main(
                 label="Output",
             )
         ],
-        title="🦙🌲 Alpaca-LoRA",
-        description="Alpaca-LoRA is a 7B-parameter LLaMA model finetuned to follow instructions. It is trained on the [Stanford Alpaca](https://github.com/tatsu-lab/stanford_alpaca) dataset and makes use of the Huggingface LLaMA implementation. For more information, please visit [the project's website](https://github.com/tloen/alpaca-lora).",
+        title="Alpaca-LoRA-CN",
+        description="Alpaca-LoRA is a 7B-parameter LLaMA model finetuned on BELLE dataset to follow instructions.",
     ).launch(share=True)
     # Old testing code follows.
 

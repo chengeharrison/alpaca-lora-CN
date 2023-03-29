@@ -26,61 +26,19 @@ assert (
 ), "LLaMA is now in HuggingFace's main branch.\nPlease reinstall it: pip uninstall transformers && pip install git+https://github.com/huggingface/transformers.git"
 
 
-def tokenize(prompt, add_eos_token=True):
-    # there's probably a way to do this with the tokenizer settings
-    # but again, gotta move fast
-    result = tokenizer(
-        prompt,
-        truncation=True,
-        max_length=cutoff_len,
-        padding=False,
-        return_tensors=None,
-    )
-    if (
-        result["input_ids"][-1] != tokenizer.eos_token_id
-        and len(result["input_ids"]) < cutoff_len
-        and add_eos_token
-    ):
-        result["input_ids"].append(tokenizer.eos_token_id)
-        result["attention_mask"].append(1)
-
-    result["labels"] = result["input_ids"].copy()
-
-    return result
-
-
-def generate_and_tokenize_prompt(data_point):
-    instruction = {}
-    instruction["instruction"] = data_point["input"]
-    instruction["input"] = ""
-    instruction["output"] = data_point["target"]
-    data_point = instruction
-    full_prompt = generate_prompt(data_point)
-    tokenized_full_prompt = tokenize(full_prompt)
-    if not train_on_inputs:
-        user_prompt = generate_prompt({**data_point, "output": ""})
-        tokenized_user_prompt = tokenize(user_prompt, add_eos_token=False)
-        user_prompt_len = len(tokenized_user_prompt["input_ids"])
-
-        tokenized_full_prompt["labels"] = [
-            -100
-        ] * user_prompt_len + tokenized_full_prompt["labels"][
-            user_prompt_len:
-        ]  # could be sped up, probably
-    return tokenized_full_prompt
-
-
 def train(
     # model/data params
     base_model: str = "",  # the only required argument
     data_path: str = "./belle_open_source_1M.train.json",
     output_dir: str = "./lora-alpaca",
+    cache_dir: str = "",
     # training hyperparams
     batch_size: int = 128,
     micro_batch_size: int = 4,
     num_epochs: int = 3,
     learning_rate: float = 3e-4,
     cutoff_len: int = 256,
+    train_set_size: int = 50000,
     val_set_size: int = 2000,
     # lora hyperparams
     lora_r: int = 8,
@@ -101,11 +59,13 @@ def train(
         f"base_model: {base_model}\n"
         f"data_path: {data_path}\n"
         f"output_dir: {output_dir}\n"
+        f"cache_dir: {cache_dir}\n"
         f"batch_size: {batch_size}\n"
         f"micro_batch_size: {micro_batch_size}\n"
         f"num_epochs: {num_epochs}\n"
         f"learning_rate: {learning_rate}\n"
         f"cutoff_len: {cutoff_len}\n"
+        f"train_set_size: {train_set_size}\n"
         f"val_set_size: {val_set_size}\n"
         f"lora_r: {lora_r}\n"
         f"lora_alpha: {lora_alpha}\n"
@@ -127,25 +87,68 @@ def train(
         device_map = {"": int(os.environ.get("LOCAL_RANK") or 0)}
         gradient_accumulation_steps = gradient_accumulation_steps // world_size
 
-    with ColoInitContext(device=get_current_device()):
-        model = LlamaForCausalLM.from_pretrained(
-            base_model,
-            load_in_8bit=True,
-            device_map=device_map,
-        )
+    # with ColoInitContext(device=get_current_device()):
+    model = LlamaForCausalLM.from_pretrained(
+        base_model,
+        cache_dir=cache_dir,
+        load_in_8bit=True,
+        device_map=device_map,
+    )
 
-    model = GeminiDDP(model,
-                      device=get_current_device(),
-                      placement_policy="auto",
-                      pin_memory=True,
-                      search_range_mb=64)
+    # model = GeminiDDP(model,
+    #                   device=get_current_device(),
+    #                   placement_policy="auto",
+    #                   pin_memory=True,
+    #                   search_range_mb=64)
 
-    optimizer = HybridAdam(model.parameters())
+    # optimizer = HybridAdam(model.parameters())
 
     tokenizer = LlamaTokenizer.from_pretrained(base_model)
 
     tokenizer.pad_token_id = 0  # unk. we want this to be different from the eos token
     tokenizer.padding_side = "left"  # Allow batched inference
+
+    def tokenize(prompt, add_eos_token=True):
+        # there's probably a way to do this with the tokenizer settings
+        # but again, gotta move fast
+        result = tokenizer(
+            prompt,
+            truncation=True,
+            max_length=cutoff_len,
+            padding=False,
+            return_tensors=None,
+        )
+        if (
+            result["input_ids"][-1] != tokenizer.eos_token_id
+            and len(result["input_ids"]) < cutoff_len
+            and add_eos_token
+        ):
+            result["input_ids"].append(tokenizer.eos_token_id)
+            result["attention_mask"].append(1)
+
+        result["labels"] = result["input_ids"].copy()
+
+        return result
+
+    def generate_and_tokenize_prompt(data_point):
+        instruction = {}
+        instruction["instruction"] = data_point["input"]
+        instruction["input"] = ""
+        instruction["output"] = data_point["target"]
+        data_point = instruction
+        full_prompt = generate_prompt(data_point)
+        tokenized_full_prompt = tokenize(full_prompt)
+        if not train_on_inputs:
+            user_prompt = generate_prompt({**data_point, "output": ""})
+            tokenized_user_prompt = tokenize(user_prompt, add_eos_token=False)
+            user_prompt_len = len(tokenized_user_prompt["input_ids"])
+
+            tokenized_full_prompt["labels"] = [
+                -100
+            ] * user_prompt_len + tokenized_full_prompt["labels"][
+                user_prompt_len:
+            ]  # could be sped up, probably
+        return tokenized_full_prompt
 
     model = prepare_model_for_int8_training(model)
 
@@ -184,8 +187,11 @@ def train(
 
     if val_set_size > 0:
         train_val = data["train"].train_test_split(
-            test_size=val_set_size, shuffle=True, seed=42
+            train_size=train_set_size, test_size=val_set_size, shuffle=True, seed=42
         )
+        # train_val = data["train"].train_test_split(
+        #     test_size=val_set_size, shuffle=True, seed=42
+        # )
         train_data = train_val["train"].shuffle().map(
             generate_and_tokenize_prompt)
         val_data = train_val["test"].shuffle().map(
