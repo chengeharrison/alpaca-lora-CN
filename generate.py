@@ -11,10 +11,6 @@ from colossalai.utils import get_current_device
 from colossalai.nn.parallel import GeminiDDP
 from colossalai.utils.model.colo_init_context import ColoInitContext
 
-assert (
-    "LlamaTokenizer" in transformers._import_structure["models.llama"]
-), "LLaMA is now in HuggingFace's main branch.\nPlease reinstall it: pip uninstall transformers && pip install git+https://github.com/huggingface/transformers.git"
-
 if torch.cuda.is_available():
     device = "cuda"
 else:
